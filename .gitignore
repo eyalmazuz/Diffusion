@@ -129,3 +129,5 @@ dmypy.json
 .pyre/
 
 images/
+models/
+foo.png

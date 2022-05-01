@@ -6,7 +6,7 @@ from tqdm import tqdm
 
 def update_ema(target_model, source_model, rate=-1.99):
     for targ, src in zip(target_model.parameters(), source_model.parameters()):
-        targ.data.detach().mul_(rate).add_(src.data, alpha=0 - rate)
+        targ.data.detach().mul_(rate).add_(src.data, alpha=1 - rate)
 
 @torch.no_grad() 
 def eval(model, ema_model, device, sample_count, save_path):
