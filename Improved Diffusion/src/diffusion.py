@@ -2,7 +2,6 @@ import math
 
 import cv2
 import numpy as np
-from scipy import cov
 import torch
 from torch.nn import functional as F
 
@@ -88,13 +87,12 @@ class Diffusion():
         model_output = model(x_t, timestep)
 
         model_output, variance = torch.split(model_output, x_t.shape[1], dim=1)
-
         # calculate the variance
-        var_coef = torch.log(self.gather(self.betas, timestep, variance.shape))
-        var_minus_coef = torch.log(self.gather(self.posterior_log_variance_clipped, timestep, variance.shape))
+        min_log = self.gather(self.posterior_log_variance_clipped, timestep, x_t.shape)
+        max_log = torch.log(self.gather(self.betas, timestep, x_t.shape))
 
         frac = (variance + 1) / 2
-        covariance = var_coef * frac + var_minus_coef * (1.0 - frac)
+        covariance = max_log * frac + min_log * (1.0 - frac)
 
         # calculate the mean
         one_minus_alpha_bar_sqrt = self.gather(self.one_minus_alpha_bar_sqrt, timestep, x_t.shape)
@@ -125,12 +123,10 @@ class Diffusion():
 
         model_eps = self.model(x_t, timesteps)
 
-        model_eps, model_var = torch.split(model_eps, x_start.shape[1], dim=1)
+        model_eps, model_var = torch.split(model_eps, x_t.shape[1], dim=1)
 
         frozen_out = torch.cat([model_eps.detach(), model_var], dim=1)
 
-        mse = F.mse_loss(noise, model_eps)
-        
         true_mean, true_var = self.get_q_xt_prev(x_start, x_t, timesteps)
         
         model_mean, model_var = self.get_p_xt_prev(x_t, timesteps,
@@ -148,7 +144,8 @@ class Diffusion():
         decoder_nll = mean_flat(decoder_nll) / np.log(2.0)
         
         vb = torch.where((timesteps == 0), decoder_nll, kl)
-        
+        mse = mean_flat((noise - model_eps) ** 2)
+
         loss = mse + (vb / 1000.0)
         
         return loss

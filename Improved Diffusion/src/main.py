@@ -17,7 +17,7 @@ from model import MiniUNet
 from train import train
 
 BATCH_SIZE = 32
-PATH = './images'
+PATH = '../images'
 EPOCHS = 20
 DATE = str(datetime.now().strftime("%Y_%m_%d_%H_%M_%S"))
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -37,7 +37,7 @@ def main():
     ema_model = copy.deepcopy(model)
     optimizer = Adam(model.parameters(), lr=2e-4)
 
-    diffusion_model = Diffusion(model, 4000)
+    diffusion_model = Diffusion(model, 4000, schedule='linear')
     
     train(diffusion_model, ema_model, dataloader, optimizer, DEVICE, EPOCHS, f'./models/{DATE}', 4, f'./images/{DATE}')
 
