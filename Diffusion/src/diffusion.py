@@ -90,6 +90,8 @@ class Diffusion():
         beta_end = 0.02 * scale
         betas = torch.linspace(beta_start, beta_end, timesteps)
 
+        return betas
+
 def main():
     diffusion = Diffusion(None, timesteps=4001, device='cpu')
 
