@@ -104,23 +104,10 @@ class Diffusion():
         mean = one_over_alpha_sqrt * (x_t - eps_coef * model_output)
 
         return mean, covariance
-
-    def cond_p_mean(self, x_t, timestep, mean, variance, classifier, y=None, classifier_scale=10.0):
-        with torch.enable_grad():
-            x_in = x_t.detach().require_grad(True)
-            logits = classifier(x_t, timestep)
-            probs = F.log_softmax(logits)
-            classes_probs = probs[range(len(logits)), y.view(-1)]
-            grad = torch.autograd.grad(classes_probs.sum(), x_in)[0] * classifier_scale
-
-        return mean + variance * grad
-
-    def p_sample(self, x_t, timestep: torch.Tensor, model=None, classifier=None, y=None, classifier_scale=10.0):
+        
+    def p_sample(self, x_t, timestep: torch.Tensor, model=None):
 
         mean, variance = self.get_p_xt_prev(x_t, timestep, model)
-
-        if classifier is not None:
-            mean = self.cond_p_mean(x_t, timestep, mean, variance, classifier, y, classifier_scale)
 
         noise = torch.randn(x_t.shape, device=x_t.device)
 
