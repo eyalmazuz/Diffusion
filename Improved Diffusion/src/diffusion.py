@@ -168,9 +168,9 @@ class Diffusion():
         return betas
 
 def main():
-    diffusion = Diffusion(None, timesteps=4001, device='cpu')
+    diffusion = Diffusion(None, timesteps=4001, device='cpu', schedule='linear')
 
-    img = cv2.imread('./images/10000_2004.jpg').astype(np.float32) / 127.5 - 1
+    img = cv2.imread('../../images/10000_2004.jpg').astype(np.float32) / 127.5 - 1
     print(img.shape)
     img2 = cv2.resize(img, (128, 128))
 
@@ -178,20 +178,9 @@ def main():
 
     img2 = torch.from_numpy(img2).permute(2, 0, 1).unsqueeze(0)
     print(img2.shape)
-    x_1 = diffusion.q_sample(img2, torch.tensor([1]), noise=None)
-    x_10 = diffusion.q_sample(img2, torch.tensor([10]), noise=None)
-    x_100 = diffusion.q_sample(img2, torch.tensor([100]), noise=None)
-    x_400 = diffusion.q_sample(img2, torch.tensor([400]), noise=None)
-    x_1000 = diffusion.q_sample(img2, torch.tensor([1000]), noise=None)
-    x_4000 = diffusion.q_sample(img2, torch.tensor([4000]), noise=None)
-
-    cv2.imwrite('./1.png', (x_1[0].permute(1, 2, 0).numpy() + 1 )  * 127.5)
-    cv2.imwrite('./10.png', (x_10[0].permute(1, 2, 0).numpy() + 1) * 127.5)
-    cv2.imwrite('./100.png', (x_100[0].permute(1, 2, 0).numpy() + 1) * 127.5)
-    cv2.imwrite('./400.png', (x_400[0].permute(1, 2, 0).numpy() + 1) * 127.5)
-    cv2.imwrite('./1000.png', (x_1000[0].permute(1, 2, 0).numpy() + 1) * 127.5)
-    cv2.imwrite('./4000.png', (x_4000[0].permute(1, 2, 0).numpy() + 1) * 127.5)
-
+    for i in [1, 10, 50, 100, 200, 500, 1000, 1500, 2000, 3000, 4000]:
+        x_i = diffusion.q_sample(img2, torch.tensor([i]), noise=None)
+        cv2.imwrite(f'./lin/{i}.png', (x_i[0].permute(1, 2, 0).numpy() + 1 )  * 127.5)
 
 
 if __name__ == "__main__":

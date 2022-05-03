@@ -130,4 +130,4 @@ dmypy.json
 
 images/
 models/
-foo.png
+*.png
