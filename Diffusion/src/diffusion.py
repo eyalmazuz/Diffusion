@@ -83,7 +83,7 @@ class Diffusion():
 
         return F.mse_loss(noise, model_eps)
 
-    def get_betas(self, timesteps: int) -> np.ndarray:
+    def get_betas(self, timesteps: int) -> torch.Tensor:
 
         scale = 1000 / timesteps
         beta_start = 0.0001 * scale
