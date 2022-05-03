@@ -104,23 +104,10 @@ class Diffusion():
         mean = one_over_alpha_sqrt * (x_t - eps_coef * model_output)
 
         return mean, covariance
-
-    def cond_p_mean(self, x_t, timestep, mean, variance, classifier, y=None, classifier_scale=10.0):
-        with torch.enable_grad():
-            x_in = x_t.detach().require_grad(True)
-            logits = classifier(x_t, timestep)
-            probs = F.log_softmax(logits)
-            classes_probs = probs[range(len(logits)), y.view(-1)]
-            grad = torch.autograd.grad(classes_probs.sum(), x_in)[0] * classifier_scale
-
-        return mean + variance * grad
-
-    def p_sample(self, x_t, timestep: torch.Tensor, model=None, classifier=None, y=None, classifier_scale=10.0):
+        
+    def p_sample(self, x_t, timestep: torch.Tensor, model=None):
 
         mean, variance = self.get_p_xt_prev(x_t, timestep, model)
-
-        if classifier is not None:
-            mean = self.cond_p_mean(x_t, timestep, mean, variance, classifier, y, classifier_scale)
 
         noise = torch.randn(x_t.shape, device=x_t.device)
 
@@ -181,9 +168,9 @@ class Diffusion():
         return betas
 
 def main():
-    diffusion = Diffusion(None, timesteps=4001, device='cpu', schedule='linear')
+    diffusion = Diffusion(None, timesteps=4001, device='cpu')
 
-    img = cv2.imread('../../images/10000_2004.jpg').astype(np.float32) / 127.5 - 1
+    img = cv2.imread('./images/10000_2004.jpg').astype(np.float32) / 127.5 - 1
     print(img.shape)
     img2 = cv2.resize(img, (128, 128))
 
@@ -191,9 +178,20 @@ def main():
 
     img2 = torch.from_numpy(img2).permute(2, 0, 1).unsqueeze(0)
     print(img2.shape)
-    for i in [1, 10, 50, 100, 200, 500, 1000, 1500, 2000, 3000, 4000]:
-        x_i = diffusion.q_sample(img2, torch.tensor([i]), noise=None)
-        cv2.imwrite(f'./lin/{i}.png', (x_i[0].permute(1, 2, 0).numpy() + 1 )  * 127.5)
+    x_1 = diffusion.q_sample(img2, torch.tensor([1]), noise=None)
+    x_10 = diffusion.q_sample(img2, torch.tensor([10]), noise=None)
+    x_100 = diffusion.q_sample(img2, torch.tensor([100]), noise=None)
+    x_400 = diffusion.q_sample(img2, torch.tensor([400]), noise=None)
+    x_1000 = diffusion.q_sample(img2, torch.tensor([1000]), noise=None)
+    x_4000 = diffusion.q_sample(img2, torch.tensor([4000]), noise=None)
+
+    cv2.imwrite('./1.png', (x_1[0].permute(1, 2, 0).numpy() + 1 )  * 127.5)
+    cv2.imwrite('./10.png', (x_10[0].permute(1, 2, 0).numpy() + 1) * 127.5)
+    cv2.imwrite('./100.png', (x_100[0].permute(1, 2, 0).numpy() + 1) * 127.5)
+    cv2.imwrite('./400.png', (x_400[0].permute(1, 2, 0).numpy() + 1) * 127.5)
+    cv2.imwrite('./1000.png', (x_1000[0].permute(1, 2, 0).numpy() + 1) * 127.5)
+    cv2.imwrite('./4000.png', (x_4000[0].permute(1, 2, 0).numpy() + 1) * 127.5)
+
 
 
 if __name__ == "__main__":
