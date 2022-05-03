@@ -6,6 +6,8 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 
+from utils import sum_flat
+
 class Diffusion():
 
     def __init__(self,
@@ -56,7 +58,7 @@ class Diffusion():
         return normed_logprobs
 
     def p_pred(self, x_t, timestep: torch.Tensor, model=None):
-        x_t_one_hot = self.onehot(x_t)
+        x_t_one_hot = self.onehot_to_idx(x_t)
         if model is None:
             model = self.model
         model_x_0 = model(x_t_one_hot, timestep)
@@ -64,21 +66,47 @@ class Diffusion():
 
         return x_t
 
-
     def categorical_kl(self, prob_a, prob_b):
         return torch.sum(prob_a * torch.log(prob_a / prob_b), dim=1)
 
-    def loss(self, x_start, x_t, timestep: torch.Tensor):
-        x_t_prev = self.get_q_xt_prev_from_t_and_start(x_t, x_start, timestep)
-        model_x_t_prev = self.p_pred(x_t, timestep)
-        kl = self.categorical_kl(x_t_prev, model_x_t_prev)
-        loss = kl.reshape(*kl.shape[:1], -1).sum(dim=-1)
+    def loss(self, x_start):
+        timestep = torch.randint(0, self.timesteps, (x_start.shape[0],), deivce=x_start.device)
+
+        x_start_one_hot = self.idx_to_onehot(x_start)
+
+        x_t = self.get_q_xt_from_start(x_start_one_hot, timestep)
+        x_t_prev = self.get_q_xt_prev_from_t_and_start(x_t, x_start_one_hot, timestep)
+        model_x_start = self.p_pred(x_t, timestep)
+
+        kl = self.categorical_kl(x_t_prev, model_x_start)
+        loss = sum_flat(kl)
+
+        nll = -(x_start_one_hot * model_x_start).sum(dim=1)
+        nll = sum_flat(nll)
+
+        loss = torch.where(timestep == 0, nll, loss)
+
+        loss /= np.log(2)
+
         return loss
 
 
-    def onehot(self, x: torch.Tensor) -> torch.Tensor:
+    def idx_to_onehot(self, x: torch.Tensor) -> torch.Tensor:
+        onehot = torch.zeros(x.shape[0], self.num_classes)
+        onehot.scatter_(1, x.unsqueeze(1), 1)
+        return onehot
+
+    def onehot_to_idx(self, x: torch.Tensor) -> torch.Tensor:
         return x.argmax(1)
 
+
+    def sample_p(self, x, timestep: torch.Tensor):
+        model_probs = self.p_pred(x, timestep)
+        out = F.gumbel_softmax(model_probs, tau=1, hard=True)
+
+        out = self.idx_to_onehot(out)
+
+        return out
 
     def get_betas(self, timesteps: int) -> torch.Tensor:
 
