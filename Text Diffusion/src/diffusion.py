@@ -77,7 +77,7 @@ class Diffusion():
 
         return normed_logprobs
 
-    def q_sample(self, x_start, timestep: torch.Tensor):
+    def sample_q(self, x_start, timestep: torch.Tensor):
         x_t = self.get_q_xt_from_start(x_start, timestep)
         out = F.gumbel_softmax(x_t, tau=1, hard=False)
 
@@ -139,7 +139,7 @@ if __name__ == '__main__':
     x_start_one_hot = index_to_log_onehot(x_start, dataset.vocab_size)
     print()
     for i in [1, 10, 50, 100, 200, 500, 999]:
-        x_i = diffusion.q_sample(x_start_one_hot, torch.tensor([i]))
+        x_i = diffusion.sample_q(x_start_one_hot, torch.tensor([i]))
         argmax = onehot_to_idx(x_i)
         print(f'step: {i}', ''.join([dataset.itos[i.item()] for i in argmax[0]]))
         print()
