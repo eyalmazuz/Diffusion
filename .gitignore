@@ -131,3 +131,4 @@ dmypy.json
 images/
 models/
 *.png
+text8*

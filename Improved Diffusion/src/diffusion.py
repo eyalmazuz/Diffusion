@@ -163,7 +163,7 @@ class Diffusion():
         
         return loss
 
-    def get_betas(self, timesteps: int, schedule: str, max_beta: float=0.999) -> np.ndarray:
+    def get_betas(self, timesteps: int, schedule: str, max_beta: float=0.999) -> torch.Tensor:
 
         if schedule == 'linear':
             scale = 1000 / timesteps
