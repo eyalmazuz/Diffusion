@@ -111,7 +111,10 @@ class Diffusion():
         x_t_idx = onehot_to_idx(x_t)
         if model is None:
             model = self.model
-        model_x_0 = F.log_softmax(model(x_t_idx, timestep), dim=-1)
+        # model_x_0 = F.log_softmax(model(x_t_idx, timestep), dim=-1)
+        # Not Sure About this, since we don't use log space
+        # I think it's needed to always have X_start be one-hot vector
+        model_x_0 = F.log_softmax(model(x_t_idx, timestep), dim=-1).argmax(-1)
         x_t_prev = self.get_q_xt_prev_from_xt_and_start(x_t, model_x_0, timestep)
 
         return x_t_prev
