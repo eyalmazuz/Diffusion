@@ -80,7 +80,7 @@ class Diffusion():
 
         return x_t
     
-    def get_q_xt_prev_from_t_and_start(self, x_t, x_start, timestep: torch.Tensor):
+    def get_q_xt_prev_from_xt_and_start(self, x_t, x_start, timestep: torch.Tensor):
 
         timestep_minus_1 = timestep - 1
         timestep_minus_1 = torch.where(timestep_minus_1 < 0, torch.zeros_like(timestep_minus_1), timestep_minus_1)
@@ -92,34 +92,62 @@ class Diffusion():
 
         if self.use_log:
             logprobs = prior_x_t + prior_x_start
-            normed_logprobs = logprobs - torch.logsumexp(logprobs, dim=1, keepdim=True)
+            normed_logprobs = logprobs - torch.logsumexp(logprobs, dim=-1, keepdim=True)
         
         else:
             logprobs = prior_x_t * prior_x_start
-            normed_logprobs = logprobs / torch.sum(logprobs, dim=1, keepdim=True)
+            normed_logprobs = logprobs / torch.sum(logprobs, dim=-1, keepdim=True)
 
         return normed_logprobs
 
     def sample_q(self, x_start, timestep: torch.Tensor):
         x_t = self.get_q_xt_from_start(x_start, timestep)
-        out = F.gumbel_softmax(torch.log(x_t), tau=1, hard=False)
+        if not self.use_log:
+            x_t = torch.log(x_t)
+        out = F.gumbel_softmax(x_t, tau=1, hard=False)
         return out
 
     def p_pred(self, x_t, timestep: torch.Tensor, model=None):
         x_t_idx = onehot_to_idx(x_t)
         if model is None:
             model = self.model
-        model_x_0 = F.log_softmax(model(x_t_idx, timestep), dim=1)
-        x_t_prev = self.get_q_xt_prev_from_t_and_start(x_t, model_x_0, timestep)
+        model_x_0 = F.log_softmax(model(x_t_idx, timestep), dim=-1)
+        x_t_prev = self.get_q_xt_prev_from_xt_and_start(x_t, model_x_0, timestep)
 
         return x_t_prev
 
     def categorical_kl(self, prob_a, prob_b):
         if self.use_log:
-            return torch.sum(prob_a * (prob_a - prob_b), dim=1)
+            return torch.sum(prob_a * (prob_a - prob_b), dim=-1)
 
         else:
-            return torch.sum(prob_a * torch.log(prob_a / prob_b), dim=1)
+            return torch.sum(prob_a * torch.log(prob_a / prob_b), dim=-1)
+
+    def compute_Lt(self, x_start, x_t, timestep):
+        true_prob = self.get_q_xt_prev_from_xt_and_start(x_t, x_start, timestep)
+
+        model_prob = self.p_pred(x_t, timestep)
+
+        kl = self.categorical_kl(true_prob, model_prob)    
+
+        kl = sum_flat(kl)
+
+        nll = -(x_start_one_hot * model_prob).sum(dim=-1)
+        nll = sum_flat(nll)
+
+        loss = torch.where(timestep == 0, nll, kl)
+        
+        return loss
+
+    def kl_prior(self, x_start):
+        ones = torch.ones(x_start.size(0), device=x_start.device).long()
+
+        q_xt_prob = self.get_q_xt_from_start(x_start, (self.timesteps - 1) * ones)
+        q_xt_half = -torch.log(self.num_classes * torch.ones_like(q_xt_prob))
+
+        kl_prior = self.categorical_kl(q_xt_prob, q_xt_half)
+
+        return sum_flat(kl_prior)
 
     def loss(self, x_start):
         timestep = torch.randint(0, self.timesteps, (x_start.shape[0],), deivce=x_start.device)
@@ -130,18 +158,12 @@ class Diffusion():
         else:
             x_start_one_hot = index_to_onehot(x_start, self.num_classes)
 
-        x_t = self.q_sample(x_start_one_hot, timestep)
+        x_t = self.sample_q(x_start_one_hot, timestep)
 
-        x_t_prev = self.get_q_xt_prev_from_t_and_start(x_t, x_start_one_hot, timestep)
-        model_x_t_prev = self.p_pred(x_t, timestep)
+        kl = self.compute_Lt(x_start_one_hot, x_t, timestep)
+        kl_prior = self.kl_prior(x_start,)
 
-        kl = self.categorical_kl(x_t_prev, model_x_t_prev)
-        loss = sum_flat(kl)
-
-        nll = -(x_start_one_hot.exp() * model_x_t_prev).sum(dim=1)
-        nll = sum_flat(nll)
-
-        loss = torch.where(timestep == 0, nll, loss)
+        loss = kl + kl_prior
 
         loss /= np.log(2)
 
@@ -149,7 +171,9 @@ class Diffusion():
 
     def sample_p(self, x, timestep: torch.Tensor):
         model_probs = self.p_pred(x, timestep)
-        out = F.gumbel_softmax(torch.log(model_probs), tau=1, hard=False)
+        if not self.use_log:
+            model_probs = torch.log(model_probs)
+        out = F.gumbel_softmax(model_probs, tau=1, hard=False)
 
         out = onehot_to_idx(out)
 
