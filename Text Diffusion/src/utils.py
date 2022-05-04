@@ -12,6 +12,11 @@ def log_add(log_x, log_y):
     maximum = torch.max(log_x, log_y)
     return maximum + torch.log(torch.exp(log_x - maximum) + torch.exp(log_y - maximum))
 
+def index_to_onehot(x, num_classes):
+    x_onehot = F.one_hot(x, num_classes)
+
+    return x_onehot
+
 def index_to_log_onehot(x, num_classes):
     x_onehot = F.one_hot(x, num_classes)
 
