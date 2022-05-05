@@ -7,7 +7,7 @@ from torch.nn import functional as F
 from torch import nn
 
 from dataset import Text8Dataset
-from utils import sum_flat, cosine_beta_schedule, log_add, index_to_log_onehot, onehot_to_idx, index_to_onehot
+from utils import sum_flat, cosine_beta_schedule, log_add, onehot_to_idx, index_to_onehot
 class Diffusion():
 
     def __init__(self,
@@ -50,6 +50,19 @@ class Diffusion():
 
         return res
 
+    def log_categorical(self, x_start, log_prob):
+        if self.use_log:
+            x_start = x_start.exp()
+
+        return torch.sum(x_start * log_prob, dim=-1)
+
+    def categorical_kl(self, prob_a, prob_b):
+        if self.use_log:
+            return torch.sum(prob_a.exp() * (prob_a - prob_b), dim=-1)
+
+        else:
+            return torch.sum(prob_a * torch.log(prob_a / prob_b), dim=-1)
+
     def get_q_xt_from_prev(self, x_prev, timestep: torch.Tensor):
         if self.use_log:
             alphas = self.gather(self.log_alphas, timestep, x_prev.shape)
@@ -79,6 +92,22 @@ class Diffusion():
             x_t = alpha_bar * x_start + one_minus_alpha_bar / self.num_classes
 
         return x_t
+
+    def predict_start(self, x_t, timestep: torch.Tensor, model=None):
+        x_t_idx = onehot_to_idx(x_t)
+
+        if model is None:
+            model = self.model
+        out = model(x_t_idx, timestep)
+
+        model_x_0 = F.log_softmax(out, dim=-1)
+        # Not Sure About this, since we don't use log space
+        # I think it's needed to always have X_start be one-hot vector
+        if not self.use_log:
+            model_x_0 = model_x_0.argmax(-1)
+        # x_t_prev = self.get_q_xt_prev_from_xt_and_start(x_t, model_x_0, timestep)
+
+        return model_x_0
     
     def get_q_xt_prev_from_xt_and_start(self, x_t, x_start, timestep: torch.Tensor):
 
@@ -86,7 +115,7 @@ class Diffusion():
         timestep_minus_1 = torch.where(timestep_minus_1 < 0, torch.zeros_like(timestep_minus_1), timestep_minus_1)
 
         prior_x_start = self.get_q_xt_from_start(x_start, timestep_minus_1) 
-        prior_x_start = torch.where(timestep_minus_1 == 0, x_start, prior_x_start)
+        prior_x_start = torch.where(timestep == 0, x_start, prior_x_start)
 
         prior_x_t = self.get_q_xt_from_prev(x_t, timestep)
 
@@ -100,48 +129,31 @@ class Diffusion():
 
         return normed_logprobs
 
-    def sample_q(self, x_start, timestep: torch.Tensor):
-        x_t = self.get_q_xt_from_start(x_start, timestep)
-        if not self.use_log:
-            x_t = torch.log(x_t)
-        out = F.gumbel_softmax(x_t, tau=1, hard=False)
-        return out
-
-    def p_pred(self, x_t, timestep: torch.Tensor, model=None):
-        x_t_idx = onehot_to_idx(x_t)
-        if model is None:
-            model = self.model
-        # model_x_0 = F.log_softmax(model(x_t_idx, timestep), dim=-1)
-        # Not Sure About this, since we don't use log space
-        # I think it's needed to always have X_start be one-hot vector
-        model_x_0 = F.log_softmax(model(x_t_idx, timestep), dim=-1).argmax(-1)
-        x_t_prev = self.get_q_xt_prev_from_xt_and_start(x_t, model_x_0, timestep)
+    def pred_p(self, x_t, timestep: torch.Tensor, model=None):
+        x_start = self.predict_start(x_t, timestep, model)
+        x_t_prev = self.get_q_xt_prev_from_xt_and_start(x_t, x_start, timestep)
 
         return x_t_prev
 
-    def categorical_kl(self, prob_a, prob_b):
-        if self.use_log:
-            return torch.sum(prob_a * (prob_a - prob_b), dim=-1)
+    @torch.no_grad()
+    def sample_p(self, x, timestep: torch.Tensor, model=None):
+        model_probs = self.pred_p(x, timestep, model)
+        if not self.use_log:
+            model_probs = torch.log(model_probs)
+        out = F.gumbel_softmax(model_probs, tau=1, hard=False)
 
-        else:
-            return torch.sum(prob_a * torch.log(prob_a / prob_b), dim=-1)
+        return out
 
-    def compute_Lt(self, x_start, x_t, timestep):
-        true_prob = self.get_q_xt_prev_from_xt_and_start(x_t, x_start, timestep)
+    def sample_q(self, x_start, timestep: torch.Tensor):
+        x_t = self.get_q_xt_from_start(x_start, timestep)
 
-        model_prob = self.p_pred(x_t, timestep)
+        if not self.use_log:
+            x_t = torch.log(x_t)
 
-        kl = self.categorical_kl(true_prob, model_prob)    
+        out = F.gumbel_softmax(x_t, tau=1, hard=False)
 
-        kl = sum_flat(kl)
-
-        nll = -(x_start_one_hot * model_prob).sum(dim=-1)
-        nll = sum_flat(nll)
-
-        loss = torch.where(timestep == 0, nll, kl)
-        
-        return loss
-
+        return out
+    
     def kl_prior(self, x_start):
         ones = torch.ones(x_start.size(0), device=x_start.device).long()
 
@@ -152,36 +164,36 @@ class Diffusion():
 
         return sum_flat(kl_prior)
 
+    def compute_Lt(self, x_start, x_t, timestep):
+        true_prob = self.get_q_xt_prev_from_xt_and_start(x_t, x_start, timestep)
+
+        model_prob = self.pred_p(x_t, timestep)
+
+        kl = self.categorical_kl(true_prob, model_prob)    
+        kl = sum_flat(kl)
+
+        nll = self.log_categorical(x_start, model_prob) 
+        nll = sum_flat(nll)
+
+        loss = torch.where(timestep == 0, nll, kl)
+        
+        return loss
+
     def loss(self, x_start):
         timestep = torch.randint(0, self.timesteps, (x_start.shape[0],), deivce=x_start.device)
 
-        if self.use_log:
-            x_start_one_hot = index_to_log_onehot(x_start, self.num_classes)
+        x_start_one_hot = index_to_onehot(x_start, self.num_classes, self.use_log)
         
-        else:
-            x_start_one_hot = index_to_onehot(x_start, self.num_classes)
-
         x_t = self.sample_q(x_start_one_hot, timestep)
 
         kl = self.compute_Lt(x_start_one_hot, x_t, timestep)
         kl_prior = self.kl_prior(x_start,)
 
         loss = kl + kl_prior
-
         loss /= np.log(2)
 
         return loss
-
-    def sample_p(self, x, timestep: torch.Tensor):
-        model_probs = self.p_pred(x, timestep)
-        if not self.use_log:
-            model_probs = torch.log(model_probs)
-        out = F.gumbel_softmax(model_probs, tau=1, hard=False)
-
-        out = onehot_to_idx(out)
-
-        return out
-
+    
 if __name__ == '__main__':
     print('loading dataset')
     use_log = False
@@ -195,7 +207,7 @@ if __name__ == '__main__':
     print('step: 0', ''.join([dataset.itos[i.item()] for i in x_start[0]]))
 
     if use_log:
-        x_start_one_hot = index_to_log_onehot(x_start, dataset.vocab_size)
+        x_start_one_hot = index_to_onehot(x_start, dataset.vocab_size, use_log)
     
     else:
         x_start_one_hot = index_to_onehot(x_start, dataset.vocab_size)
