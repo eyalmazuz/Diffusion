@@ -206,11 +206,8 @@ if __name__ == '__main__':
     print(f'{x_start.size()=}')
     print('step: 0', ''.join([dataset.itos[i.item()] for i in x_start[0]]))
 
-    if use_log:
-        x_start_one_hot = index_to_onehot(x_start, dataset.vocab_size, use_log)
+    x_start_one_hot = index_to_onehot(x_start, dataset.vocab_size, use_log)
     
-    else:
-        x_start_one_hot = index_to_onehot(x_start, dataset.vocab_size)
 
     print()
     print(x_start_one_hot)

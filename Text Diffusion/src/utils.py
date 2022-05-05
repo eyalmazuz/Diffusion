@@ -16,9 +16,9 @@ def index_to_onehot(x, num_classes, use_log=False):
     x_onehot = F.one_hot(x, num_classes)
 
     if use_log:
-        log_onehot = torch.log(x_onehot.float().clamp(min=1e-30))
+        x_onehot = torch.log(x_onehot.float().clamp(min=1e-30))
 
-    return log_onehot
+    return x_onehot
 
 def onehot_to_idx(x: torch.Tensor) -> torch.Tensor:
     return x.argmax(-1)
