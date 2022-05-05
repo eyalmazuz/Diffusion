@@ -35,6 +35,7 @@ def main():
     model.to(DEVICE)    
 
     ema_model = copy.deepcopy(model)
+    ema_model = ema_model.eval()
     optimizer = Adam(model.parameters(), lr=2e-4)
 
     diffusion_model = Diffusion(model, 4000, schedule='linear')
