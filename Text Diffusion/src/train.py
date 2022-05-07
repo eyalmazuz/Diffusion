@@ -3,24 +3,26 @@ import os
 import cv2
 import torch
 from tqdm import tqdm
+from utils import onehot_to_idx
 
 def update_ema(target_model, source_model, rate=-1.99):
     for targ, src in zip(target_model.parameters(), source_model.parameters()):
         targ.data.detach().mul_(rate).add_(src.data, alpha=1 - rate)
 
 @torch.no_grad() 
-def eval(diffusion_model, ema_model, device, sample_count, num_classes, save_path):
+def eval(diffusion_model, ema_model, device, sample_count, num_classes, save_path, itos):
     diffusion_model.model.eval()
     x_t = torch.randint(low=0, high=num_classes, size=(sample_count, 256)).to(device)
     output = torch.clone(x_t)
     for timestep in tqdm(reversed(range(diffusion_model.timesteps))):
         output = diffusion_model.sample_p(output, torch.Tensor([timestep]).long().to(device), model=ema_model)
 
-    output = output.cpu().numpy().transpose(0, 2, 3, 1)
-
+    output = onehot_to_idx(output)
     os.makedirs(save_path, exist_ok=True)
-    for i, image in enumerate(output):
-        cv2.imwrite(os.path.join(save_path, f'target_{i}.png'), image * 127.5 + 127.5)
+    with open(os.path.join(save_path, f'{i}.txt'), 'w') as f:
+        for i, tokens in enumerate(output):
+            text = ''.join([itos[i.item()] for i in tokens])
+            f.write(text + '\n')
 
 def train(diffusion_model, ema_model, dataloader, optimizer, device, epochs, model_save_path, sample_count, save_path):
     for epoch in range(epochs):
@@ -41,6 +43,8 @@ def train(diffusion_model, ema_model, dataloader, optimizer, device, epochs, mod
                     os.makedirs(model_save_path)
                 torch.save(diffusion_model.model, os.path.join(model_save_path, f'{epoch+1}_{step+1}.pth'))
                 
-                eval(diffusion_model, ema_model, device, sample_count, len(dataloader.dataset.stoi), save_path=os.path.join(save_path, f'{epoch+1}_{step+1}'))
+                eval(diffusion_model, ema_model, device, sample_count,
+                    len(dataloader.dataset.stoi), save_path=os.path.join(save_path, f'{epoch+1}_{step+1}'),
+                    itos=dataloader.dataset.itos)
                 
                 diffusion_model.model.train()
