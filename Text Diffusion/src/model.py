@@ -1,6 +1,34 @@
+import math
+
 import torch
 from torch import nn
 from torch.nn import functional as F
+
+class PositionalEncoding(nn.Module):
+    """Positional Encoding."""
+    def __init__(self, dim, max_period=10000):
+        super().__init__()
+        self.dim = dim
+        self.max_period = max_period
+    
+        self.proj1 = nn.Linear(dim, dim * 4)
+        self.proj2 = nn.Linear(dim * 4, dim * 4)
+
+    def forward(self, timesteps):
+        half = self.dim // 2
+        freqs = torch.exp(
+            -math.log(self.max_period) * torch.arange(start=0, end=half, dtype=torch.float32) / half
+        ).to(device=timesteps.device)
+        args = timesteps[:, None].float() * freqs[None]
+        emb = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+        if self.dim % 2:
+            emb = torch.cat([emb, torch.zeros_like(emb[:, :1])], dim=-1)
+        
+        emb = self.proj1(emb)
+        emb = F.relu(emb)
+        emb = self.proj2(emb)
+
+        return emb
 
 class MultiheadAttention(nn.Module):
     def __init__(self, config):
@@ -78,22 +106,18 @@ class Encoder(nn.Module):
 
 
         self.token_embds = nn.Embedding(config.vocab_size, config.n_embd)
-        self.pos_emb = nn.Parameter(torch.zeros(1, config.block_size, config.n_embd))
 
-        self.drop = nn.Dropout(config.embd_dropout_rate)
         self.blocks = nn.ModuleList([EncoderBlock(config) for _ in range(config.n_layers)])
 
-    def forward(self, idx, padding_mask=None):
+    def forward(self, idx, padding_mask=None, timesteps=None):
         B, T = idx.size()
 
         token_embds = self.token_embds(idx)
-        pos_embs = self.pos_emb[:, :T, :] # each position maps to a (learnable) vector
-        x = self.drop(token_embds + pos_embs)
 
         attn_weights = {}
 
         for i, block in enumerate(self.blocks):
-            x, weights = block(x, padding_mask=padding_mask)
+            x, weights = block(x + timesteps, padding_mask=padding_mask)
             attn_weights[f'encoder_block_{i}'] = weights
 
         return x, attn_weights
@@ -130,6 +154,8 @@ class Bert(nn.Module):
     def __init__(self, config: BertConfig):
         super(Bert, self).__init__()
 
+        self.pos_emb = PositionalEncoding(config.n_embd)
+
         self.encoder = Encoder(config)
 
         self.config = config
@@ -140,10 +166,13 @@ class Bert(nn.Module):
     def forward(self, input_ids, timesteps=None, padding_mask=None, **kwargs):
         B_enc, T_enc = input_ids.size()
 
+        timesteps = self.pos_emb(timesteps)        
+        timesteps = timesteps.view(B_enc, 1, self.config.n_embd)
+
         if padding_mask is not None:
             padding_mask = padding_mask.view(B_enc, 1, 1, T_enc)
 
-        enc_out, enc_attnetions = self.encoder(input_ids, padding_mask)
+        enc_out, enc_attnetions = self.encoder(input_ids, padding_mask, timesteps)
         
         # print(f'{enc_out.size()=}')
         logits = self.logits(enc_out)
