@@ -137,7 +137,7 @@ class Bert(nn.Module):
         self.logits = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
 
-    def forward(self, input_ids, padding_mask=None, labels=None, **kwargs):
+    def forward(self, input_ids, timesteps=None, padding_mask=None, **kwargs):
         B_enc, T_enc = input_ids.size()
 
         if padding_mask is not None:
