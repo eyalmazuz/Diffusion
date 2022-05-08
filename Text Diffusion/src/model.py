@@ -6,13 +6,14 @@ from torch.nn import functional as F
 
 class PositionalEncoding(nn.Module):
     """Positional Encoding."""
-    def __init__(self, dim, max_period=10000):
+    def __init__(self, dim, n_layers, max_period=10000):
         super().__init__()
         self.dim = dim
+        self.n_layers = n_layers
         self.max_period = max_period
     
         self.proj1 = nn.Linear(dim, dim * 4)
-        self.proj2 = nn.Linear(dim * 4, dim * 4)
+        self.proj2 = nn.Linear(dim * 4, dim * n_layers)
 
     def forward(self, timesteps):
         half = self.dim // 2
@@ -96,6 +97,7 @@ class EncoderBlock(nn.Module):
         attn_logits, attn_weights = self.mha(x, x, x, mask=padding_mask)
         attn_logits = self.dropout(attn_logits)
         x = self.ln1(x + attn_logits)
+        # y = self.mlp(x)
         x = x + self.ln2(x + self.mlp(x))
 
         return x, attn_weights
@@ -112,12 +114,17 @@ class Encoder(nn.Module):
     def forward(self, idx, padding_mask=None, timesteps=None):
         B, T = idx.size()
 
-        token_embds = self.token_embds(idx)
+        x = self.token_embds(idx)
+
+        # print(f'{x.size()=}')
+        # print(f'{timesteps.size()=}')
+        # print(f'{len(self.blocks)=}')
 
         attn_weights = {}
 
         for i, block in enumerate(self.blocks):
-            x, weights = block(x + timesteps, padding_mask=padding_mask)
+            # print(f'{(x + timesteps[..., i]).size()=}')
+            x, weights = block(x )#+ timesteps[..., i], padding_mask=padding_mask)
             attn_weights[f'encoder_block_{i}'] = weights
 
         return x, attn_weights
@@ -154,7 +161,7 @@ class Bert(nn.Module):
     def __init__(self, config: BertConfig):
         super(Bert, self).__init__()
 
-        self.pos_emb = PositionalEncoding(config.n_embd)
+        self.pos_emb = PositionalEncoding(config.n_embd, config.n_layers)
 
         self.encoder = Encoder(config)
 
@@ -166,13 +173,13 @@ class Bert(nn.Module):
     def forward(self, input_ids, timesteps=None, padding_mask=None, **kwargs):
         B_enc, T_enc = input_ids.size()
 
-        timesteps = self.pos_emb(timesteps)        
-        timesteps = timesteps.view(B_enc, 1, self.config.n_embd)
+        # timesteps = self.pos_emb(timesteps)        
+        # timesteps = timesteps.view(B_enc, 1, self.config.n_embd, self.config.n_layers)
 
         if padding_mask is not None:
             padding_mask = padding_mask.view(B_enc, 1, 1, T_enc)
 
-        enc_out, enc_attnetions = self.encoder(input_ids, padding_mask, timesteps)
+        enc_out, enc_attnetions = self.encoder(input_ids, padding_mask,) # timesteps)
         
         # print(f'{enc_out.size()=}')
         logits = self.logits(enc_out)

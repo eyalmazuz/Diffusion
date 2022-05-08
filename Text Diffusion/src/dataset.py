@@ -6,7 +6,7 @@ class Text8Dataset(Dataset):
         self.path = path
         self.seq_len = seq_len
         with open(path, 'r') as f:
-            self.data = f.read()[:16*32]
+            self.data = f.read()
 
         self.stoi = {" ": 0, "a": 1, "b": 2, "c": 3, "d": 4,
                     "e": 5, "f": 6, "g": 7, "h": 8, "i": 9,

@@ -41,7 +41,6 @@ class Diffusion():
 
         self.num_classes = num_classes
 
-        print(self.alphas[0], self.alpha_bar[0], self.one_minus_alpha[0], self.one_minus_alpha_bar[0])
 
     def gather(self, res, t, shape):
         res = res.gather(-1, t)
@@ -103,10 +102,10 @@ class Diffusion():
         model_x_0 = F.log_softmax(out, dim=-1)
         # Not Sure About this, since we don't use log space
         # I think it's needed to always have X_start be one-hot vector
-        if not self.use_log:
-            model_x_0 = model_x_0.argmax(-1)
+        # if not self.use_log:
+            # model_x_0 = model_x_0.argmax(-1)
+            # model_x_0 = index_to_onehot(model_x_0, self.num_classes)
         # x_t_prev = self.get_q_xt_prev_from_xt_and_start(x_t, model_x_0, timestep)
-
         return model_x_0
     
     def get_q_xt_prev_from_xt_and_start(self, x_t, x_start, timestep: torch.Tensor):
@@ -116,10 +115,9 @@ class Diffusion():
 
         prior_x_start = self.get_q_xt_from_start(x_start, timestep_minus_1) 
 
-        print(f'{timestep.dtype=}')
-        print(f'{x_start.dtype=}')
-        print(f'{prior_x_start.dtype=}')
-        prior_x_start = torch.where(timestep == 0, x_start, prior_x_start)
+        num_axes = (1,) * (len(x_start.size()) - 1)
+        t_broadcast = timestep.view(-1, *num_axes) * torch.ones_like(x_start)
+        prior_x_start = torch.where(t_broadcast == 0, x_start, prior_x_start)
 
         prior_x_t = self.get_q_xt_from_prev(x_t, timestep)
 
@@ -144,7 +142,7 @@ class Diffusion():
         model_probs = self.pred_p(x, timestep, model)
         if not self.use_log:
             model_probs = torch.log(model_probs)
-        out = F.gumbel_softmax(model_probs, tau=1, hard=False)
+        out = F.gumbel_softmax(model_probs, tau=1, hard=True)
 
         return out
 
@@ -173,6 +171,7 @@ class Diffusion():
 
         model_prob = self.pred_p(x_t, timestep, padding_mask)
 
+
         kl = self.categorical_kl(true_prob, model_prob)    
         kl = sum_flat(kl)
 
@@ -193,7 +192,7 @@ class Diffusion():
         kl = self.compute_Lt(x_start_one_hot, x_t, timestep, padding_mask)
         kl_prior = self.kl_prior(x_start,)
 
-        loss = kl + kl_prior
+        loss = kl #+ kl_prior
         loss /= np.log(2)
 
         return loss

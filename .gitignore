@@ -132,3 +132,6 @@ images/
 models/
 *.png
 text8*
+titan.vsc
+samples.txt
+*.txt
