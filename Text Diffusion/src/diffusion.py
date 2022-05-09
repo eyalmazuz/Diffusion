@@ -97,7 +97,7 @@ class Diffusion():
 
         if model is None:
             model = self.model
-        out = model(x_t_idx, timestep, padding_mask)
+        out = model(x_t_idx, timestep, padding_mask=padding_mask)
 
         model_x_0 = F.log_softmax(out, dim=-1)
         # Not Sure About this, since we don't use log space
@@ -117,7 +117,7 @@ class Diffusion():
 
         num_axes = (1,) * (len(x_start.size()) - 1)
         t_broadcast = timestep.view(-1, *num_axes) * torch.ones_like(x_start)
-        prior_x_start = torch.where(t_broadcast == 0, x_start, prior_x_start)
+        prior_x_start = torch.where(t_broadcast == 0, x_start, prior_x_start.float())
 
         prior_x_t = self.get_q_xt_from_prev(x_t, timestep)
 
@@ -142,7 +142,7 @@ class Diffusion():
         model_probs = self.pred_p(x, timestep, model)
         if not self.use_log:
             model_probs = torch.log(model_probs)
-        out = F.gumbel_softmax(model_probs, tau=1, hard=True)
+        out = F.gumbel_softmax(model_probs, tau=1, hard=False).float()
 
         return out
 

@@ -14,9 +14,9 @@ def eval(diffusion_model, ema_model, device, sample_count, num_classes, save_pat
     diffusion_model.model.eval()
     x_t = torch.randint(low=0, high=num_classes, size=(sample_count, 256)).to(device)
     output = torch.clone(x_t)
-    output = index_to_onehot(output, num_classes)
+    output = index_to_onehot(output, num_classes, diffusion_model.use_log)
     for timestep in tqdm(reversed(range(diffusion_model.timesteps))):
-        output = diffusion_model.sample_p(output, torch.Tensor([timestep]).long().to(device), model=ema_model)
+        output = diffusion_model.sample_p(output, torch.full((sample_count, ), timestep, device=device, dtype=torch.long), model=ema_model)
 
     output = onehot_to_idx(output)
     os.makedirs(save_path[:save_path.rfind('/')], exist_ok=True)
