@@ -1,3 +1,4 @@
+import math
 import os
 
 import cv2
@@ -12,13 +13,14 @@ def update_ema(target_model, source_model, rate=-1.99):
 @torch.no_grad() 
 def eval(diffusion_model, ema_model, device, sample_count, num_classes, save_path, itos):
     diffusion_model.model.eval()
-    x_t = torch.randint(low=0, high=num_classes, size=(sample_count, 256)).to(device)
-    output = torch.clone(x_t)
-    output = index_to_onehot(output, num_classes, diffusion_model.use_log)
-    for timestep in tqdm(reversed(range(diffusion_model.timesteps))):
-        output = diffusion_model.sample_p(output, torch.full((sample_count, ), timestep, device=device, dtype=torch.long), model=ema_model)
+    # x_t = torch.randint(low=0, high=num_classes, size=(sample_count, 256)).to(device)
+    # output = torch.clone(x_t)
+    # output = index_to_onehot(output, num_classes, diffusion_model.use_log)
+    # for timestep in tqdm(reversed(range(diffusion_model.timesteps))):
+        # output = diffusion_model.sample_p(output, torch.full((sample_count, ), timestep, device=device, dtype=torch.long), model=ema_model)
 
-    output = onehot_to_idx(output)
+    output = diffusion_model.sample(sample_count, seq_len=256, model=ema_model)
+    
     os.makedirs(save_path[:save_path.rfind('/')], exist_ok=True)
     with open(save_path, 'w') as f:
         for i, tokens in enumerate(output):
@@ -30,7 +32,7 @@ def train(diffusion_model, ema_model, dataloader, optimizer, device, epochs, mod
         for step, batch in enumerate(dataloader):
             batch = batch.to(device)
 
-            loss = diffusion_model.loss(batch).mean()
+            loss = - diffusion_model.loss(batch).sum() / (math.log(2) * batch.size(1))
             # print(loss, loss.mean())
             optimizer.zero_grad()
             loss.backward()

@@ -23,11 +23,12 @@ def index_to_onehot(x, num_classes, use_log=False):
 def onehot_to_idx(x: torch.Tensor) -> torch.Tensor:
     return x.argmax(-1)
 
-def sum_flat(tensor):
+def sum_flat(x, num_dims=1):
     """
     Take the mean over all non-batch dimensions.
     """
-    return tensor.sum(dim=list(range(1, len(tensor.shape))))
+    return x.reshape(*x.shape[:num_dims], -1).sum(-1)
+    # return tensor.sum(dim=list(range(1, len(tensor.shape))))
 
 def cosine_beta_schedule(timesteps, s = 0.008):
     """

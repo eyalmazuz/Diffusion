@@ -108,7 +108,7 @@ class Diffusion():
         # x_t_prev = self.get_q_xt_prev_from_xt_and_start(x_t, model_x_0, timestep)
         return model_x_0
     
-    def get_q_xt_prev_from_xt_and_start(self, x_t, x_start, timestep: torch.Tensor):
+    def get_q_xt_prev_from_xt_and_start(self, x_start, x_t, timestep: torch.Tensor):
 
         timestep_minus_1 = timestep - 1
         timestep_minus_1 = torch.where(timestep_minus_1 < 0, torch.zeros_like(timestep_minus_1), timestep_minus_1)
@@ -120,6 +120,7 @@ class Diffusion():
         prior_x_start = torch.where(t_broadcast == 0, x_start, prior_x_start.float())
 
         prior_x_t = self.get_q_xt_from_prev(x_t, timestep)
+
 
         if self.use_log:
             logprobs = prior_x_t + prior_x_start
@@ -133,26 +134,38 @@ class Diffusion():
 
     def pred_p(self, x_t, timestep: torch.Tensor, model=None, padding_mask=None):
         x_start = self.predict_start(x_t, timestep, model, padding_mask)
-        x_t_prev = self.get_q_xt_prev_from_xt_and_start(x_t, x_start, timestep)
+        x_t_prev = self.get_q_xt_prev_from_xt_and_start(x_start, x_t, timestep)
 
         return x_t_prev
 
     @torch.no_grad()
     def sample_p(self, x, timestep: torch.Tensor, model=None):
         model_probs = self.pred_p(x, timestep, model)
+
         if not self.use_log:
             model_probs = torch.log(model_probs)
-        out = F.gumbel_softmax(model_probs, tau=1, hard=False).float()
+            out = F.gumbel_softmax(model_probs, tau=1, hard=False).float()
+
+        else:
+            out = self.log_sample_categorical(model_probs)
 
         return out
+
+    def log_sample_categorical(self, logits):
+        uniform = torch.rand_like(logits)
+        gumbel_noise = -torch.log(-torch.log(uniform + 1e-30) + 1e-30)
+        sample = (gumbel_noise + logits).argmax(dim=-1)
+        log_sample = index_to_onehot(sample, self.num_classes, self.use_log)
+        return log_sample
 
     def sample_q(self, x_start, timestep: torch.Tensor):
         x_t = self.get_q_xt_from_start(x_start, timestep)
 
         if not self.use_log:
             x_t = torch.log(x_t)
-
-        out = F.gumbel_softmax(x_t, tau=1, hard=False)
+            out = F.gumbel_softmax(x_t, tau=1, hard=False)
+        else:
+            out = self.log_sample_categorical(x_t)
 
         return out
     
@@ -167,7 +180,7 @@ class Diffusion():
         return sum_flat(kl_prior)
 
     def compute_Lt(self, x_start, x_t, timestep, padding_mask=None):
-        true_prob = self.get_q_xt_prev_from_xt_and_start(x_t, x_start, timestep)
+        true_prob = self.get_q_xt_prev_from_xt_and_start(x_start, x_t, timestep)
 
         model_prob = self.pred_p(x_t, timestep, padding_mask)
 
@@ -175,27 +188,43 @@ class Diffusion():
         kl = self.categorical_kl(true_prob, model_prob)    
         kl = sum_flat(kl)
 
-        nll = self.log_categorical(x_start, model_prob) 
+        nll = -self.log_categorical(x_start, model_prob) 
         nll = sum_flat(nll)
 
-        loss = torch.where(timestep == 0, nll, kl)
+        mask = (timestep == torch.zeros_like(timestep)).float()
+        loss = mask * nll + (1. - mask) * kl
+        # loss = torch.where(timestep == 0, nll, kl)
         
         return loss
 
     def loss(self, x_start, padding_mask=None):
         timestep = torch.randint(0, self.timesteps, (x_start.shape[0],), device=x_start.device, dtype=torch.long)
+        pt = torch.ones_like(timestep)
 
-        x_start_one_hot = index_to_onehot(x_start, self.num_classes, self.use_log)
+        x_start_onehot = index_to_onehot(x_start, self.num_classes, self.use_log)
         
-        x_t = self.sample_q(x_start_one_hot, timestep)
+        # x_t = self.sample_q(x_start_one_hot, timestep)
 
-        kl = self.compute_Lt(x_start_one_hot, x_t, timestep, padding_mask)
+        kl = self.compute_Lt(x_start_onehot, self.sample_q(x_start_onehot, timestep), timestep, padding_mask)
         kl_prior = self.kl_prior(x_start,)
 
-        loss = kl #+ kl_prior
-        loss /= np.log(2)
+        loss = kl / pt + kl_prior
+        # loss /= np.log(2)
 
-        return loss
+        return -loss
+
+    def sample(self, num_samples, seq_len, model=None):
+        b = num_samples
+        device = self.log_alphas.device
+        uniform_logits = torch.zeros((b, seq_len, self.num_classes), device=device)
+        log_z = self.log_sample_categorical(uniform_logits)
+        for i in reversed(range(0, self.timesteps)):
+            print(f'Sample timestep {i:4d}', end='\r')
+
+            t = torch.full((b,), i, device=device, dtype=torch.long)
+            log_z = self.sample_p(log_z, t, model)
+        print()
+        return onehot_to_idx(log_z)
     
 if __name__ == '__main__':
     print('loading dataset')

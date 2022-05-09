@@ -17,7 +17,7 @@ from train import train
 
 BATCH_SIZE = 32
 PATH = './text8'
-EPOCHS = 20
+EPOCHS = 300
 DATE = str(datetime.now().strftime("%Y_%m_%d_%H_%M_%S"))
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(DEVICE)
