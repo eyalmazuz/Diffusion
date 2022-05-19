@@ -87,7 +87,7 @@ class LinearAttentionTransformerEmbedding(nn.Module):
         for i, block in enumerate(self.transformer_blocks):
             h = h + x_embed_axial
             for j, transformer in enumerate(block):
-                h = transformer(h + time_embed[..., i, j])
+                h = transformer(h + time_embed[..., i, j], **kwargs)
 
         h = self.norm(h)
         return self.out(h)
@@ -108,8 +108,8 @@ class DynamicsTransformer(nn.Module):
             input_dim=vocab_size,
             output_dim=vocab_size,
             dim=512,
-            heads=8,
-            depth=2,
+            heads=16,
+            depth=12,
             n_blocks=1,
             max_seq_len=256,
             num_timesteps=1000,
@@ -118,7 +118,7 @@ class DynamicsTransformer(nn.Module):
             attn_layer_dropout=0.0,
             # dropout right after self-attention layer
             attn_dropout=0,  # dropout post-attention
-            n_local_attn_heads=4,
+            n_local_attn_heads=8,
             # number of local attention heads for (qk)v attention.
             # this can be a tuple specifying the exact number of local
             # attention heads at that depth

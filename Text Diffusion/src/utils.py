@@ -20,6 +20,9 @@ def index_to_onehot(x, num_classes, use_log=False):
 
     return x_onehot
 
+def log_1_min_a(a):
+    return torch.log(1 - a.exp() + 1e-40)
+
 def onehot_to_idx(x: torch.Tensor) -> torch.Tensor:
     return x.argmax(-1)
 

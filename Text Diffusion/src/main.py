@@ -35,13 +35,13 @@ def main():
     model = DynamicsTransformer(dataset.vocab_size,)
     model.to(DEVICE)    
 
-    ema_model = copy.deepcopy(model)
-    ema_model = ema_model.eval()
-    optimizer = Adam(model.parameters(), lr=2e-4)
+    #ema_model = copy.deepcopy(model)
+    #ema_model = ema_model.eval()
+    optimizer = Adam(model.parameters(), lr=1e-4)
 
     diffusion_model = Diffusion(model, 1000, num_classes=dataset.vocab_size, schedule='cosine', use_log=True)
     
-    train(diffusion_model, ema_model, dataloader, optimizer, DEVICE, EPOCHS, f'./models/{DATE}', 32, f'./texts/{DATE}')
+    train(diffusion_model, dataloader, optimizer, DEVICE, EPOCHS, f'./models/{DATE}', 32, f'./texts/{DATE}')
 
 if __name__ == '__main__':
     main()

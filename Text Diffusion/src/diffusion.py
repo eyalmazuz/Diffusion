@@ -7,7 +7,7 @@ from torch.nn import functional as F
 from torch import nn
 
 from dataset import Text8Dataset
-from utils import sum_flat, cosine_beta_schedule, log_add, onehot_to_idx, index_to_onehot
+from utils import sum_flat, cosine_beta_schedule, log_add, onehot_to_idx, index_to_onehot, log_1_min_a
 
 class Diffusion():
     def __init__(self,
@@ -26,20 +26,23 @@ class Diffusion():
             self.alphas = 1 - torch.linspace(0.0001, 0.02, timesteps).to(device)
         
         elif schedule == 'cosine':
-            self.alphas = torch.tensor(cosine_beta_schedule(timesteps)).to(device)
+            self.alphas = torch.tensor(cosine_beta_schedule(timesteps)).to(device).to(torch.float64)
 
         self.log_alphas = torch.log(self.alphas)
 
         self.alpha_bar = torch.cumprod(self.alphas, dim=0)
-        self.log_alpha_bar = torch.cumprod(self.log_alphas, dim=0)
+        self.log_alpha_bar = torch.cumsum(self.log_alphas, dim=0)
 
         self.one_minus_alpha = 1 - self.alphas
-        self.log_one_minus_alpha = torch.log(self.one_minus_alpha)
+        self.log_one_minus_alpha = log_1_min_a(self.log_alphas)
 
         self.one_minus_alpha_bar = 1 - self.alpha_bar
-        self.log_one_minus_alpha_bar = torch.log(self.one_minus_alpha_bar)
+        self.log_one_minus_alpha_bar = log_1_min_a(self.log_alpha_bar)
 
         self.num_classes = num_classes
+
+        self.Lt_history = torch.zeros(timesteps, dtype=torch.float).to(device)
+        self.Lt_count = torch.zeros(timesteps, dtype=torch.float).to(device)
 
 
     def gather(self, res, t, shape):
@@ -92,14 +95,18 @@ class Diffusion():
 
         return x_t
 
-    def predict_start(self, x_t, timestep: torch.Tensor, model=None, padding_mask=None):
+    def predict_start(self, x_t, timestep: torch.Tensor, model=None, input_mask=None):
         x_t_idx = onehot_to_idx(x_t)
 
         if model is None:
             model = self.model
-        out = model(x_t_idx, timestep, padding_mask=padding_mask)
+        out = model(x_t_idx, timestep, input_mask=input_mask)
 
-        model_x_0 = F.log_softmax(out, dim=-1)
+        if self.use_log:
+            model_x_0 = F.log_softmax(out, dim=-1)
+
+        else:
+            model_x_0 = F.softmax(out, dim=-1)
         # Not Sure About this, since we don't use log space
         # I think it's needed to always have X_start be one-hot vector
         # if not self.use_log:
@@ -132,8 +139,8 @@ class Diffusion():
 
         return normed_logprobs
 
-    def pred_p(self, x_t, timestep: torch.Tensor, model=None, padding_mask=None):
-        x_start = self.predict_start(x_t, timestep, model, padding_mask)
+    def pred_p(self, x_t, timestep: torch.Tensor, model=None, input_mask=None):
+        x_start = self.predict_start(x_t, timestep, model, input_mask)
         x_t_prev = self.get_q_xt_prev_from_xt_and_start(x_start, x_t, timestep)
 
         return x_t_prev
@@ -169,20 +176,22 @@ class Diffusion():
 
         return out
     
-    def kl_prior(self, x_start):
-        ones = torch.ones(x_start.size(0), device=x_start.device).long()
+    def kl_prior(self, log_x_start):
+        b = log_x_start.size(0)
+        device = log_x_start.device
+        ones = torch.ones(b, device=device).long()
 
-        q_xt_prob = self.get_q_xt_from_start(x_start, (self.timesteps - 1) * ones)
-        q_xt_half = -torch.log(self.num_classes * torch.ones_like(q_xt_prob))
+        log_qxT_prob = self.get_q_xt_from_start(log_x_start, timestep=(self.timesteps - 1) * ones)
+        log_half_prob = -torch.log(self.num_classes * torch.ones_like(log_qxT_prob))
 
-        kl_prior = self.categorical_kl(q_xt_prob, q_xt_half)
 
+        kl_prior = self.categorical_kl(log_qxT_prob, log_half_prob)
         return sum_flat(kl_prior)
 
-    def compute_Lt(self, x_start, x_t, timestep, padding_mask=None):
+    def compute_Lt(self, x_start, x_t, timestep, input_mask=None):
         true_prob = self.get_q_xt_prev_from_xt_and_start(x_start, x_t, timestep)
 
-        model_prob = self.pred_p(x_t, timestep, padding_mask)
+        model_prob = self.pred_p(x_t, timestep, input_mask)
 
 
         kl = self.categorical_kl(true_prob, model_prob)    
@@ -197,16 +206,37 @@ class Diffusion():
         
         return loss
 
-    def loss(self, x_start, padding_mask=None):
-        timestep = torch.randint(0, self.timesteps, (x_start.shape[0],), device=x_start.device, dtype=torch.long)
-        pt = torch.ones_like(timestep)
+    def loss(self, x_start, input_mask=None):
+        if not (self.Lt_count > 10).all():
+            timestep = torch.randint(0, self.timesteps, (x_start.shape[0],), device=x_start.device, dtype=torch.long)
+            pt = (torch.ones_like(timestep).float() / float(self.timesteps)).to(timestep.device)
+
+        else:
+            Lt_sqrt = torch.sqrt(self.Lt_history + 1e-10) + 0.0001
+            Lt_sqrt[0] = Lt_sqrt[1]
+            pt_all = Lt_sqrt.float() / Lt_sqrt.sum().float()
+
+            timestep = torch.multinomial(pt_all, num_samples=x_start.size(0), replacement=True).to(x_start.device)
+
+            pt = pt_all.gather(dim=0, index=timestep).to(timestep.device).float()
+
 
         x_start_onehot = index_to_onehot(x_start, self.num_classes, self.use_log)
         
         # x_t = self.sample_q(x_start_one_hot, timestep)
 
-        kl = self.compute_Lt(x_start_onehot, self.sample_q(x_start_onehot, timestep), timestep, padding_mask)
-        kl_prior = self.kl_prior(x_start,)
+        kl = self.compute_Lt(x_start_onehot, self.sample_q(x_start_onehot, timestep), timestep, input_mask)
+
+        Lt2 = kl.pow(2)
+        Lt2_prev = self.Lt_history.gather(dim=0, index=timestep).float()
+        new_Lt_history = (0.1 * Lt2 + 0.9 * Lt2_prev).detach().to(self.Lt_history.device).float()
+
+
+        self.Lt_history.scatter_(dim=0, index=timestep, src=new_Lt_history)
+        self.Lt_count.scatter_add_(dim=0, index=timestep, src=torch.ones_like(Lt2).float())
+
+
+        kl_prior = self.kl_prior(x_start_onehot,)
 
         loss = kl / pt + kl_prior
         # loss /= np.log(2)

@@ -135,3 +135,5 @@ text8*
 titan.vsc
 samples.txt
 *.txt
+rtx.sh
+gdb13.smi
