@@ -2,6 +2,10 @@ import json
 import os
 import random
 
+from rdkit import Chem
+from rdkit.Chem.QED import qed
+from rdkit.Chem.Scaffolds import MurckoScaffold
+
 import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
@@ -32,10 +36,14 @@ class Text8Dataset(Dataset):
         return self.data[idx]
 
 class MoleculeDataset(Dataset):
-    def __init__(self, path, seq_len=256):
+    def __init__(self, path, seq_len=256, corruiption_rate=0.2, return_scaffold=True, return_guidance=True):
         self.path = path
         self.seq_len = seq_len
 
+        self.corruiption_rate = corruiption_rate
+        self.return_scaffold = return_scaffold
+        self.return_guidance = return_guidance
+        
         with open(path, 'r') as f:
             self.data = [smiles.strip() for smiles in f.readlines()]
 
@@ -74,7 +82,29 @@ class MoleculeDataset(Dataset):
         tokens = [self.stoi['[BOS]']] + [self.stoi[c] for c in smiles] + [self.stoi['[EOS]']]
         mask = (self.seq_len - len(tokens)) * [self.stoi['[PAD]']]
 
-        return torch.tensor(tokens + mask)
+        output = {
+            'x_start': torch.tensor(tokens + mask),
+        }
+
+        if self.return_guidance:
+            mol = Chem.MolFromSmiles(smiles)
+            qed_score = qed(mol)
+
+            if random.random() < self.corruiption_rate:
+                qed_score = 0
+
+            output['guidance'] = qed_score
+
+        if self.return_scaffold:
+            scaffold = MurckoScaffold.MurckoScaffoldSmiles(mol=mol)
+            scaffold_tokens = [self.stoi[c] if c in self.stoi else self.stoi['[UNK]'] for c in scaffold]
+            scaffold_mask = (self.seq_len - len(scaffold_tokens)) * [self.stoi['[PAD]']]
+            context_mask = [True] * len(scaffold_tokens) + [False] * len(scaffold_mask)
+
+            output['context'] = torch.tensor(scaffold_tokens + scaffold_mask)
+            output['context_mask'] = torch.tensor(context_mask)
+
+        return output
 
 if __name__ == '__main__':
     dataset = Text8Dataset('../text8', seq_len=16)

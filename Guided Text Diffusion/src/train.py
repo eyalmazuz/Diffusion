@@ -34,7 +34,7 @@ def update_ema(target_model, source_model, rate=0.99):
         targ.data.detach().mul_(rate).add_(src.data, alpha=1 - rate)
 
 @torch.no_grad() 
-def eval(diffusion_model, ema_model, sample_count, save_path, itos):
+def eval(diffusion_model, ema_model, device, sample_count, num_classes, save_path, itos, context=None, context_mask=None, guidance=None):
     diffusion_model.model.eval()
     # x_t = torch.randint(low=0, high=num_classes, size=(sample_count, 256)).to(device)
     # output = torch.clone(x_t)
@@ -42,16 +42,22 @@ def eval(diffusion_model, ema_model, sample_count, save_path, itos):
     # for timestep in tqdm(reversed(range(diffusion_model.timesteps))):
         # output = diffusion_model.sample_p(output, torch.full((sample_count, ), timestep, device=device, dtype=torch.long), model=ema_model)
 
-    output = diffusion_model.sample(sample_count, seq_len=diffusion_model.model.transformer.max_seq_len,
-                                    model=ema_model)
+    output = diffusion_model.sample(sample_count, seq_len=diffusion_model.model.decoder.max_seq_len,
+                                    model=ema_model, context=context, context_mask=context_mask, guidance=guidance)
     
     os.makedirs(save_path[:save_path.rfind('/')], exist_ok=True)
     with open(save_path, 'w') as f:
+        if context is not None:
+            scaffold = ''.join([itos[idx] for idx in context.cpu().numpy().tolist()])
+            f.write(f'Scaffold: {scaffold}\n')
+        
+        if guidance is not None:
+            f.write(f'QED: {guidance.cpu().item()}\n')
         for i, tokens in enumerate(output):
             text = ''.join([itos[i.item()] for i in tokens])
             f.write(text + '\n')
 
-def train(diffusion_model, dataloader, optimizer, device, epochs, model_save_path, sample_count, save_path):
+def train(diffusion_model, dataloader, optimizer, device, epochs, model_save_path, sample_count, save_path, use_context=True, use_guidance=True):
     # scaler = GradScaler()
 
     epoch_lr = ExponentialLR(optimizer, gamma=0.99)
@@ -65,9 +71,12 @@ def train(diffusion_model, dataloader, optimizer, device, epochs, model_save_pat
         for step, batch in enumerate(dataloader):
             optimizer.zero_grad()
 
-            inputs = batch.to(device)
+
+            for k, v in batch.items():
+                batch[k] = v.to(device)
+
             #with autocast():
-            loss = - diffusion_model.loss(inputs).sum() / (math.log(2) * torch.prod(torch.tensor(inputs.size()[:2])).to(device))
+            loss = - diffusion_model.loss(**batch).sum() / (math.log(2) * torch.prod(torch.tensor(batch['x_start'].size()[:2])).to(device))
             # print(loss, loss.mean())
             loss.backward()
             optimizer.step()
@@ -78,7 +87,7 @@ def train(diffusion_model, dataloader, optimizer, device, epochs, model_save_pat
             #scaler.step(optimizer)
             #scaler.update()
 
-            loss_count += len(batch)
+            loss_count += len(batch['x_start'])
 
 
 
@@ -98,9 +107,22 @@ def train(diffusion_model, dataloader, optimizer, device, epochs, model_save_pat
                 
             if step % 2500 == 0 and step != 0:
                 print('Training. Epoch: {}/{}, Step: {}, Datapoint: {}/{}, Bits/char: {:.3f}'.format(epoch+1, epochs, step, loss_count, len(dataloader.dataset), loss_moving))
-                eval(diffusion_model, ema_model, sample_count,
-                    save_path=os.path.join(save_path, f'{epoch+1}', f'{step+1}.txt'),
-                    itos=dataloader.dataset.itos,)
+                if use_context:
+                    scaffold = random.choice(dataloader.dataset.data)
+                    scaffold_tokens = [dataloader.dataset.stoi[c] if c in dataloader.dataset.stoi else dataloader.dataset.stoi['[UNK]'] for c in scaffold]
+
+                    mask = [dataloader.dataset.stoi['[PAD]']] * (diffusion_model.model.decoder.max_seq_len - len(scaffold_tokens))
+                    context_mask = [True] * len (scaffold_tokens) + [False] * (diffusion_model.model.decoder.max_seq_len - len(scaffold_tokens))
+
+                if use_guidance:
+                    qed_score = qed(Chem.MolFromSmiles(scaffold))
+
+                eval(diffusion_model, ema_model, device, sample_count,
+                    len(dataloader.dataset.stoi), save_path=os.path.join(save_path, f'{epoch+1}', f'{step+1}.txt'),
+                    itos=dataloader.dataset.itos,
+                    context=torch.tensor(scaffold_tokens + mask, device=device) if use_context else None,
+                    context_mask=torch.tensor(context_mask, device=device) if use_context else None,
+                    guidance=torch.tensor(qed_score, device=device) if use_guidance else None)
                 
                 diffusion_model.model.train()
 

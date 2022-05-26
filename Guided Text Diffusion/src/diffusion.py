@@ -45,6 +45,9 @@ class Diffusion():
         self.Lt_count = torch.zeros(timesteps, dtype=torch.float).to(device)
 
 
+        self.w = 0.1
+
+
     def gather(self, res, t, shape):
         res = res.gather(-1, t)
         while len(res.shape) < len(shape):
@@ -52,13 +55,20 @@ class Diffusion():
 
         return res
 
-    def log_categorical(self, x_start, log_prob):
+    def log_categorical(self, x_start, log_prob, input_mask=None):
+        # if input_mask is not None:
+        #     log_prob = log_prob * input_mask[..., None]
+
         if self.use_log:
             x_start = x_start.exp()
 
         return torch.sum(x_start * log_prob, dim=-1)
 
-    def categorical_kl(self, prob_a, prob_b):
+    def categorical_kl(self, prob_a, prob_b, input_mask=None):
+        # if input_mask is not None:
+        #     prob_a = prob_a * input_mask[..., None]
+        #     prob_b = prob_b * input_mask[..., None]
+
         if self.use_log:
             return torch.sum(prob_a.exp() * (prob_a - prob_b), dim=-1)
 
@@ -95,14 +105,24 @@ class Diffusion():
 
         return x_t
 
-    def predict_start(self, x_t, timestep: torch.Tensor, model=None):
+    def predict_start(self, x_t, timestep: torch.Tensor, model=None, **kwargs):
         x_t_idx = onehot_to_idx(x_t)
 
         if model is None:
             model = self.model
 
-        out = model(x_t_idx, timestep)
+        if 'guidance' in kwargs and kwargs['guidance'] is not None:
+            guidance = kwargs['guidance']
+            kwargs['guidance'] = torch.zeros_like(guidance)
+
+        out = model(x_t_idx, timestep, **kwargs)
         
+        if 'guidance' in kwargs and kwargs['guidance'] is not None:
+            kwargs['guidance'] = guidance
+            out_guided = model(x_t_idx, timestep, **kwargs)
+
+            out = (1 + self.w) * out_guided - self.w * out
+
         if self.use_log:
             model_x_0 = F.log_softmax(out, dim=-1)
 
@@ -140,15 +160,15 @@ class Diffusion():
 
         return normed_logprobs
 
-    def pred_p(self, x_t, timestep: torch.Tensor, model=None):
-        x_start = self.predict_start(x_t, timestep, model)
+    def pred_p(self, x_t, timestep: torch.Tensor, model=None, **kwargs):
+        x_start = self.predict_start(x_t, timestep, model, **kwargs)
         x_t_prev = self.get_q_xt_prev_from_xt_and_start(x_start, x_t, timestep)
 
         return x_t_prev
 
     @torch.no_grad()
-    def sample_p(self, x, timestep: torch.Tensor, model=None):
-        model_probs = self.pred_p(x, timestep, model)
+    def sample_p(self, x, timestep: torch.Tensor, model=None, **kwargs):
+        model_probs = self.pred_p(x, timestep, model, **kwargs)
 
         if not self.use_log:
             model_probs = torch.log(model_probs)
@@ -189,15 +209,15 @@ class Diffusion():
         kl_prior = self.categorical_kl(log_qxT_prob, log_half_prob)
         return sum_flat(kl_prior)
 
-    def compute_Lt(self, x_start, x_t, timestep):
+    def compute_Lt(self, x_start, x_t, timestep, **kwargs):
         true_prob = self.get_q_xt_prev_from_xt_and_start(x_start, x_t, timestep)
 
-        model_prob = self.pred_p(x_t, timestep)
+        model_prob = self.pred_p(x_t, timestep, **kwargs)
 
-        kl = self.categorical_kl(true_prob, model_prob)    
+        kl = self.categorical_kl(true_prob, model_prob, input_mask=None)    
         kl = sum_flat(kl)
 
-        nll = -self.log_categorical(x_start, model_prob) 
+        nll = -self.log_categorical(x_start, model_prob, input_mask=None) 
         nll = sum_flat(nll)
 
         mask = (timestep == torch.zeros_like(timestep)).float()
@@ -206,7 +226,7 @@ class Diffusion():
         
         return loss
 
-    def loss(self, x_start):
+    def loss(self, x_start, **kwargs):
         if not (self.Lt_count > 10).all():
             timestep = torch.randint(0, self.timesteps, (x_start.shape[0],), device=x_start.device, dtype=torch.long)
             pt = (torch.ones_like(timestep).float() / float(self.timesteps)).to(timestep.device)
@@ -225,7 +245,7 @@ class Diffusion():
         
         # x_t = self.sample_q(x_start_one_hot, timestep)
 
-        kl = self.compute_Lt(x_start_onehot, self.sample_q(x_start_onehot, timestep), timestep)
+        kl = self.compute_Lt(x_start_onehot, self.sample_q(x_start_onehot, timestep), timestep, **kwargs)
 
         Lt2 = kl.pow(2)
         Lt2_prev = self.Lt_history.gather(dim=0, index=timestep).float()
@@ -243,17 +263,26 @@ class Diffusion():
 
         return -loss
 
-    def sample(self, num_samples, seq_len, model=None):
+    def sample(self, num_samples, seq_len, model=None, **kwargs):
         b = num_samples
         device = self.log_alphas.device
         uniform_logits = torch.zeros((b, seq_len, self.num_classes), device=device)
         log_z = self.log_sample_categorical(uniform_logits)
         
+        if 'guidance' in kwargs and kwargs['guidance'] is not None:
+            kwargs['guidance'] = kwargs['guidance'].repeat(b, 1)
+        
+        if 'context' in kwargs and kwargs['context'] is not None:
+            kwargs['context'] = kwargs['context'].repeat(b, 1) 
+
+        if 'context_mask' in kwargs and kwargs['context_mask'] is not None:
+            kwargs['context_mask'] = kwargs['context_mask'].repeat(b, 1)
+
         for i in reversed(range(0, self.timesteps)):
             print(f'Sample timestep {i:4d}', end='\r')
 
             t = torch.full((b,), i, device=device, dtype=torch.long)
-            log_z = self.sample_p(log_z, t, model)
+            log_z = self.sample_p(log_z, t, model, **kwargs)
         print()
         return onehot_to_idx(log_z)
     

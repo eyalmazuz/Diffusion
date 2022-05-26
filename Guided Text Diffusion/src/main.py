@@ -27,7 +27,7 @@ print(DEVICE)
 
 def main():
     
-    dataset = MoleculeDataset(PATH, MAX_SEQ_LEN)
+    dataset = MoleculeDataset(PATH, MAX_SEQ_LEN, return_scaffold=False, return_guidance=False)
 
     dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
@@ -36,8 +36,8 @@ def main():
     # model = Bert(config)
     model = DynamicsTransformer(dataset.vocab_size, dim=128, heads=8, depth=4, n_blocks=1,
                                 max_seq_len=MAX_SEQ_LEN, num_timesteps=NUM_TIMESTEPS, ff_dropout=0.3,
-                                attn_layer_dropout=0.3, n_local_attn_heads=4, local_attn_window_size=64,)
-
+                                attn_layer_dropout=0.3, n_local_attn_heads=4, local_attn_window_size=64,
+                                use_context=False, use_guidance=False)
     model.to(DEVICE)    
 
     #ema_model = copy.deepcopy(model)
@@ -46,7 +46,7 @@ def main():
 
     diffusion_model = Diffusion(model, NUM_TIMESTEPS, num_classes=dataset.vocab_size, schedule='cosine', use_log=True)
     
-    train(diffusion_model, dataloader, optimizer, DEVICE, EPOCHS, f'./models/{DATE}', 32, f'./texts/{DATE}')
+    train(diffusion_model, dataloader, optimizer, DEVICE, EPOCHS, f'./models/{DATE}', 32, f'./texts/{DATE}', use_context=False, use_guidance=False)
 
 if __name__ == '__main__':
     main()

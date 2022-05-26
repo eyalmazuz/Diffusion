@@ -30,7 +30,8 @@ class LinearAttentionTransformerEmbedding(nn.Module):
                 ff_glu = False, ff_dropout = 0., attn_layer_dropout = 0., attn_dropout = 0.,
                 blindspot_size = 1, n_local_attn_heads = 0, local_attn_window_size = 128, return_embeddings = False,
                 receives_context = False, pkm_layers = tuple(), pkm_num_keys = 128, attend_axially = False,
-                linformer_settings = None, context_linformer_settings = None,):
+                linformer_settings = None, context_linformer_settings = None,
+                use_guidance=False):
         assert (max_seq_len % local_attn_window_size) == 0, 'max sequence length must be divisible by the window size, to calculate number of kmeans cluster'
         super().__init__()
         # emb_dim = default(emb_dim, dim)
@@ -43,6 +44,8 @@ class LinearAttentionTransformerEmbedding(nn.Module):
         self.depth = depth
         self.n_blocks = n_blocks
 
+        self.use_guidance = use_guidance
+
         self.first = nn.Embedding(input_dim, emb_dim)
 
         self.time_pos_emb = SinusoidalPosEmb(emb_dim, num_timesteps)
@@ -51,6 +54,13 @@ class LinearAttentionTransformerEmbedding(nn.Module):
             nn.Softplus(),
             nn.Linear(emb_dim * 4, emb_dim * n_blocks * depth)
         )
+
+        if self.use_guidance:
+            self.guidance_mlp = nn.Sequential(
+                nn.Linear(1, emb_dim * 4),
+                nn.Softplus(),
+                nn.Linear(emb_dim * 4, emb_dim * n_blocks * depth)
+            )
 
         # self.token_emb = nn.Embedding(num_tokens, emb_dim)
         self.axial_pos_emb = AxialPositionalEmbedding(emb_dim, axial_shape=(max_seq_len // local_attn_window_size, local_attn_window_size))
@@ -88,10 +98,18 @@ class LinearAttentionTransformerEmbedding(nn.Module):
         # x_embed_axial_time = x_embed_axial + time_embed
         h = torch.zeros_like(x_embed_axial)
 
+        if self.use_guidance:
+            guidance = kwargs['guidance']
+            guidance = self.guidance_mlp(guidance[..., None].float())
+            guidance = guidance.view(x.size(0), 1, self.emb_dim, self.n_blocks, self.depth)
+
         for i, block in enumerate(self.transformer_blocks):
             h = h + x_embed_axial
             for j, transformer in enumerate(block):
-                h = transformer(h + time_embed[..., i, j], **kwargs)
+                if self.use_guidance:
+                    h = transformer(h + time_embed[..., i, j] + guidance[..., i, j], **kwargs)
+                else:
+                    h = transformer(h + time_embed[..., i, j], **kwargs)
 
         h = self.norm(h)
         return self.out(h)
@@ -107,10 +125,40 @@ class Rezero(torch.nn.Module):
 
 class DynamicsTransformer(nn.Module):
     def __init__(self, vocab_size, dim=256, heads=8, depth=4, n_blocks=1, max_seq_len=128, num_timesteps=1000,
-                ff_dropout=0, attn_layer_dropout=0, n_local_attn_heads=4, local_attn_window_size=64):
+                ff_dropout=0, attn_layer_dropout=0, n_local_attn_heads=4, local_attn_window_size=64, use_context=True, use_guidance=True):
         super(DynamicsTransformer, self).__init__()
 
-        self.transformer = LinearAttentionTransformerEmbedding(
+        self.use_context = use_context
+        self.use_guidance = use_guidance
+
+        if use_context:
+            self.encoder = LinearAttentionTransformerEmbedding(
+            input_dim=vocab_size,
+            output_dim=dim,
+            dim=dim,
+            heads=heads,
+            depth=depth,
+            n_blocks=n_blocks,
+            max_seq_len=max_seq_len,
+            num_timesteps=num_timesteps,
+            causal=False,  # auto-regressive or not
+            ff_dropout=ff_dropout,  # dropout for feedforward
+            attn_layer_dropout=attn_layer_dropout,
+            # dropout right after self-attention layer
+            attn_dropout=0,  # dropout post-attention
+            n_local_attn_heads=n_local_attn_heads,
+            # number of local attention heads for (qk)v attention.
+            # this can be a tuple specifying the exact number of local
+            # attention heads at that depth
+            receives_context=False,
+            local_attn_window_size=local_attn_window_size,
+            # receptive field of the local attention
+            reversible=False,
+            # use reversible nets, from Reformer paper
+            use_guidance=False
+        )
+
+        self.decoder = LinearAttentionTransformerEmbedding(
             input_dim=vocab_size,
             output_dim=vocab_size,
             dim=dim,
@@ -128,16 +176,21 @@ class DynamicsTransformer(nn.Module):
             # number of local attention heads for (qk)v attention.
             # this can be a tuple specifying the exact number of local
             # attention heads at that depth
+            receives_context=True if self.use_context else False,
             local_attn_window_size=local_attn_window_size,
             # receptive field of the local attention
             reversible=False,
             # use reversible nets, from Reformer paper
+            use_guidance=True if self.use_guidance else False
         )
 
         self.rezero = Rezero()
 
     def forward(self, x, t, **kwargs):
-        x = self.transformer(x, t, **kwargs)
+        if self.use_context:
+            kwargs['context'] = self.encoder(kwargs['context'], t, input_mask=kwargs['context_mask'])
+
+        x = self.decoder(x, t, **kwargs)
         # x = x.permute(0, 2, 1)
         x = self.rezero(x)
         return x
